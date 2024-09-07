@@ -1,0 +1,10 @@
+{
+    "bootloader": {
+        "config": {
+            "paths": [
+                "etc/*.json",
+                "vendor/*/concept*.json"
+            ]
+        }
+    }
+}
