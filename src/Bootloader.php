@@ -1,103 +1,87 @@
 <?php
-namespace Concept\Http;
+namespace Concept\App;
 
 use Psr\Container\ContainerInterface;
-use Concept\Config\ConfigInterface;
+use Concept\App\ConfigInterface;
+use Concept\App\Config;
 use Concept\Factory\FactoryInterface;
-use Concept\Http\App\HttpAppInterface;
+use Concept\App\AppInterface;
+use Concept\Di\Factory\DiFactoryInterface;
 
 class Bootloader    
 {
-    const BOOTLOADER_CONFIG_FILE = __DIR__ . '/etc/bootloader.json';
-
-    static protected ?Bootloader $instance = null;
-
-    protected ?ConfigInterface $config = null;
-    protected ?ContainerInterface $container = null;
-    protected ?FactoryInterface $factory = null;
-    protected ?HttpAppInterface $app = null;
-
-    public function __construct()
+    public function createApp(string $root, string $initialConfigPath): AppInterface
     {
-        static::$instance = $this;
-        $this->init();
-    }
-
-    static public function getInstance(): Bootloader
-    {
-        return static::$instance;
-    }
-
-    public function init()
-    {
-        $this->container = $this->createContainer();
-        $this->config = $this->createConfig();
-        $this->factory = $this->createFactory($this->config, $this->container);
-        $this->app = $this->createApp();
-
-        return $this;
-    }
-
-    static public function getApp(): HttpAppInterface
-    {
-        return static::getInstance()->app;
-    }
-
-    static public function getConfig(): ConfigInterface
-    {
-        return static::getInstance()->config;
-    }
-
-    static public function getContainer(): ContainerInterface
-    {
-        return static::getInstance()->container;
-    }
-
-    static public function getFactory(): FactoryInterface
-    {
-        return static::getInstance()->factory;
-    }
-
-    protected function createApp()
-    {
-
-        $app = (
-                $this->getFactory()
-                ->withServiceId(HttpAppInterface::class)
-                ->create()
-        )
-            ->withConfig($this->getConfig())
-            ->withContainer($this->getContainer())
-            ->withFactory($this->getFactory())
-        ;
-
+        $config = $this->createConfig($root, $initialConfigPath);
+        $factory = $this->createFactory($config);
+//!!!!!!use AppFactory to create app instance        
+        $appFactory = $factory->create(AppFactoryInterface::class);
+        $app = $appFactory
+            ->withConfig($config->fromPath('app'))
+            ->create();
+        
+        foreach ($config->fromPath('app.middlewares') as $middleware) {
+            $app = $app->withMiddleware($factory->create($middleware));
+        }
+        
         return $app;
     }
 
-    protected function createContainer()
-    {
-        $container = new \Concept\Container\Container();
-        return $container;
-    }
+    
 
-    protected function createConfig()
+    protected function createConfig(string $root, string $initialConfigPath): ConfigInterface
     {
-        $config = new \Concept\Config\Config();
-        foreach (glob(static::BOOTLOADER_CONFIG_FILE) as $file) {
-            $config->merge(json_decode(file_get_contents($file), true));
+        $root = realpath($root);
+
+        if (false === $root) {
+            throw new \RuntimeException('Root not found');
         }
-        
+
+        $initialConfigPath = realpath(sprintf('%s%s%s', $root, DIRECTORY_SEPARATOR, $initialConfigPath));
+
+
+        if (false === $initialConfigPath) {
+            throw new \RuntimeException('Initial config not found');
+        }
+
+        $config = (new Config());
+
+        $config
+            ->load($initialConfigPath)
+            ->merge(['root' => realpath($root)])
+        ;
+
         return $config;
     }
 
-    protected function createFactory(ConfigInterface $config, ?ContainerInterface $container = null)
+    protected function createFactory(ConfigInterface $config): FactoryInterface
     {
-        $factory = (new \Concept\Di\Factory\DiFactory())
-            ->withConfig($config)
-            ->withContainer($container);
+        $factoryClass = $config->get('factory.class');
+
+        if (!is_a($factoryClass, DiFactoryInterface::class, true)) {
+            throw new \RuntimeException(sprintf('Class %s must implement FactoryInterface', $factoryClass));
+        }
+
+        $factory = (new $factoryClass())
+            ->withConfig($config->fromPath(DiFactoryInterface::NODE_DI_CONFIG));
+
+        $container = $this->createContainer($factory, $config);
+        $factory = $factory->withContainer($container);
+        $container->attach(FactoryInterface::class, $factory);
 
         return $factory;
     }
 
-    
+    protected function createContainer(FactoryInterface $factory, ConfigInterface $config): ContainerInterface
+    {
+        $container =  $factory->create(ContainerInterface::class);
+
+        $container
+            ->attach(ContainerInterface::class, $container)
+            ->attach(ConfigInterface::class, $config)
+            ->attach(FactoryInterface::class, $factory);
+        
+        return $container;
+    }
+
 }
