@@ -10,8 +10,7 @@
         }
     ],
     "require": {
-        "php": "^7.2|^7.4|^8.0|^8.2",
-        "concept-labs/context": "^1"
+        "php": "^7.2|^7.4|^8.0|^8.2"
     },
     "autoload": {
         "psr-4": {
