@@ -2,86 +2,145 @@
 namespace Concept\App;
 
 use Psr\Container\ContainerInterface;
-use Concept\App\ConfigInterface;
-use Concept\App\Config;
-use Concept\Factory\FactoryInterface;
 use Concept\App\AppInterface;
+use Concept\Di\Factory\Composer\ComposerContext;
+use Concept\Di\Factory\Context\ConfigContext;
+use Concept\Di\Factory\Context\ConfigContextInterface;
+use Concept\Factory\FactoryInterface;
+use Concept\Di\Factory\DiFactory;
 use Concept\Di\Factory\DiFactoryInterface;
 
 class Bootloader    
 {
+    /**
+     * Create an app
+     * 
+     * @param string $root
+     * @param string $initialConfigPath
+     * 
+     * @return AppInterface
+     */
     public function createApp(string $root, string $initialConfigPath): AppInterface
     {
-        $config = $this->createConfig($root, $initialConfigPath);
-        $factory = $this->createFactory($config);
-//!!!!!!use AppFactory to create app instance        
-        $appFactory = $factory->create(AppFactoryInterface::class);
-        $app = $appFactory
-            ->withConfig($config->fromPath('app'))
-            ->create();
+        $configContext = $this->createConfigContext($root, $initialConfigPath);
+        $this->validateConfig($configContext);
         
-        foreach ($config->fromPath('app.middlewares') as $middleware) {
-            $app = $app->withMiddleware($factory->create($middleware));
-        }
-        
-        return $app;
+
+        return $this
+            ->createContainer($this->createFactory($configContext), $configContext)
+                ->get(DiFactoryInterface::class)
+                    ->create(AppFactoryInterface::class)
+                        ->withConfig($configContext->from('app'))
+                        ->create();
     }
 
-    
-
-    protected function createConfig(string $root, string $initialConfigPath): ConfigInterface
+    /**
+     * Create a config
+     * 
+     * @param string $base      Path to the base directory
+     * @param string $filepath  Path to the json file
+     * 
+     * @return ConfigContextInterface
+     */
+    protected function createConfigContext(string $base, string $filepath): ConfigContextInterface
     {
-        $root = realpath($root);
+        $base = realpath($base);
 
-        if (false === $root) {
-            throw new \RuntimeException('Root not found');
+        if (false === $base) {
+            throw new \InvalidArgumentException('Bootloader: Invalid root path provided');
         }
 
-        $initialConfigPath = realpath(sprintf('%s%s%s', $root, DIRECTORY_SEPARATOR, $initialConfigPath));
-
-
-        if (false === $initialConfigPath) {
-            throw new \RuntimeException('Initial config not found');
+        if (strpos($filepath, DIRECTORY_SEPARATOR) !== 0) {
+            $filepath = realpath(join(DIRECTORY_SEPARATOR, [$base, $filepath]));
         }
 
-        $config = (new Config());
+        if (false === $filepath) {
+            throw new \InvalidArgumentException('Bootloader: Invalid initial config path provided');
+        }
 
+        $config = (new ConfigContext());
         $config
-            ->load($initialConfigPath)
-            ->merge(['root' => realpath($root)])
-        ;
+            ->loadJsonFile($filepath)
+            ->merge(['base-path' => $base]);
+        
+        if ($config->has('composer.load-config-context') && $config->get('composer.load-config-context')) {
+            $composerContext = (new ComposerContext())->buildComposerContext();
+            /**
+             * Merge the config values with the composer values
+             * Config values have higher priority and may override package values
+             */
+            $composerContext->merge($config);
+            $config = $composerContext;
+        }
 
         return $config;
     }
 
-    protected function createFactory(ConfigInterface $config): FactoryInterface
+    /**
+     * Create a factory
+     * 
+     * @param ConfigContextInterface $configContext
+     * 
+     * @return FactoryInterface
+     */
+    protected function createFactory(ConfigContextInterface $configContext): FactoryInterface
     {
-        $factoryClass = $config->get('factory.class');
+        // $factoryClass = $config->get('factory.class') ?? DiFactory::class;
 
-        if (!is_a($factoryClass, DiFactoryInterface::class, true)) {
-            throw new \RuntimeException(sprintf('Class %s must implement FactoryInterface', $factoryClass));
-        }
+        // if (!is_a($factoryClass, DiFactoryInterface::class, true)) {
+        //     throw new \RuntimeException(sprintf('Class %s must implement %s', $factoryClass, DiFactoryInterface::class));
+        // }
 
-        $factory = (new $factoryClass())
-            ->withConfig($config->fromPath(DiFactoryInterface::NODE_DI_CONFIG));
-
-        $container = $this->createContainer($factory, $config);
-        $factory = $factory->withContainer($container);
-        $container->attach(FactoryInterface::class, $factory);
-
-        return $factory;
+        return (new DiFactory())
+            ->withConfigContext($configContext->from(ConfigContextInterface::NODE_DI_CONFIG));
     }
 
-    protected function createContainer(FactoryInterface $factory, ConfigInterface $config): ContainerInterface
+    /**
+     * Create a container
+     * 
+     * @param FactoryInterface $factory
+     * @param ConfigContextInterface $config
+     * 
+     * @return ContainerInterface
+     */
+    protected function createContainer(FactoryInterface $factory, ConfigContextInterface $config): ContainerInterface
     {
         $container =  $factory->create(ContainerInterface::class);
 
         $container
             ->attach(ContainerInterface::class, $container)
-            ->attach(ConfigInterface::class, $config)
-            ->attach(FactoryInterface::class, $factory);
+            ->attach(FactoryInterface::class, $factory->withContainer($container))
+            ->attach(DiFactoryInterface::class, $factory->withContainer($container))
+            ->attach(ConfigContextInterface::class, $config)
+        ;
         
         return $container;
+    }
+
+    /**
+     * Validate the config
+     * 
+     * @param ConfigContextInterface $config
+     * 
+     * @return void
+     */
+    protected function validateConfig(ConfigContextInterface $config): void
+    {
+        if (!$config->has('app')) {
+            throw new \RuntimeException('Bootloader: Missing app config: "/app"');
+        }
+
+        // if (!$config->has('factory.class')) {
+        //     throw new \RuntimeException('Bootloader: Missing factory class config: "/factory.class"');
+        // }
+
+        if (!$config->has(ConfigContextInterface::NODE_DI_CONFIG)) {
+            throw new \RuntimeException('Bootloader: Missing di config: "/di"');
+        }
+
+        if (!$config->has('base-path')) {
+            throw new \RuntimeException('Bootloader: Missing base config: "/base-path"');
+        }
     }
 
 }

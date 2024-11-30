@@ -1,9 +1,6 @@
 {
-    "autoload": [
-        "../vendor/*/*/concept*.json"
-    ],
     "di": {
-        "module": {
+        "package": {
             "concept-labs/app": {
                 "preference": {
                     "Concept\\App\\AppInterface": {
